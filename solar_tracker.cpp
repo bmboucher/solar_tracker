@@ -67,7 +67,7 @@ using schedule_t = vector<photo_t>;
 schedule_t schedule;
 
 int schedule_day{ 0 };
-const string schedulePath{ "schedule.txt" };
+const string schedulePath{ "/home/pi/schedule.txt" };
 
 const int photos_per_day{ 50 };
 const long cet_offset = -6 * 60 * 60;
@@ -85,7 +85,7 @@ const string yiadTag{ "YIAD" };
 size_t schedule_index{ 0 };
 
 double getMidnight() {
-    const double baseJD = ln_get_julian_from_sys();
+    const double baseJD = ln_get_julian_from_sys() - 0.25;
     struct ln_date baseDate;
     ln_get_date(baseJD, &baseDate);
     struct ln_zonedate midnight {
@@ -100,6 +100,7 @@ void calculateSchedule() {
     ln_get_date(baseJD, &baseDate);
     if (schedule.size() > 0 && schedule_day == baseDate.days) return;
     schedule_day = baseDate.days;
+    syslog(LOG_INFO, "Generating schedule");
     schedule.clear(); schedule_index = 0;
 
     struct ln_zonedate fixedDate;
@@ -148,16 +149,30 @@ void calculateSchedule() {
         printTime(fout, photo.second);
         fout << std::endl;
     }
+
+    const double nowJD = ln_get_julian_from_sys();
+    while (schedule_index < schedule.size() && schedule[schedule_index].second < nowJD) {
+        schedule_index++;
+    }
 }
 
-const string takePhotoScript{ "/home/pi/take_photo.sh " };
+int stdin_copy, stdout_copy, stderr_copy;
+const string takePhotoScript{ "/bin/bash /home/pi/take_photo.sh" };
 void takePhoto() {
     if (schedule_index >= schedule.size()) return;
     const photo_t& photo = schedule[schedule_index];
     const double JD = ln_get_julian_from_sys();
     if (JD < photo.second) return;
-    string command{ takePhotoScript + photo.first };
-    system(command.c_str());
+    string command{ takePhotoScript + " " + photo.first };
+    syslog(LOG_INFO, command.c_str());
+    pid_t pid = fork();
+    if (pid == 0) {
+        dup2(stdin_copy, STDIN_FILENO);
+        dup2(stdout_copy, STDOUT_FILENO);
+        dup2(stderr_copy, STDERR_FILENO);
+        system(command.c_str());
+        exit(EXIT_SUCCESS);
+    }
     schedule_index++;
 }
 
@@ -179,10 +194,16 @@ void setup() {
         exit(EXIT_FAILURE);
     }
 
-    if (chdir("/home/pi/solar_tracker") < 0) {
+    if (chdir("/") < 0) {
         exit(EXIT_FAILURE);
     }
-    
+
+    std::cout << "Daemon started" << std::endl;    
+
+    stdin_copy = dup(STDIN_FILENO);
+    stdout_copy = dup(STDOUT_FILENO);
+    stderr_copy = dup(STDERR_FILENO);
+
     close(STDIN_FILENO);
     close(STDOUT_FILENO);
     close(STDERR_FILENO);
